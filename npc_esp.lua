@@ -1,59 +1,181 @@
+-- AutoFarmVooXeno.lua
+
+if getgenv().AutoFarmRodando then return end
+getgenv().AutoFarmRodando = true
+getgenv().AutoFarmLigado = true
+
+-- Serviços
 local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+local char = player.Character or player.CharacterAdded:Wait()
 local RunService = game:GetService("RunService")
-local LocalPlayer = Players.LocalPlayer
+local vim = game:GetService("VirtualInputManager")
+local uis = game:GetService("UserInputService")
+local humanoid = char:WaitForChild("Humanoid")
+local hrp = char:WaitForChild("HumanoidRootPart")
 
-local DISTANCE_LIMIT = 1300 -- Limite máximo em studs
+-- Configs
+local DISTANCIA_ATAQUE = 10
+local DISTANCIA_BUSCA = 200
+local CLICK_REPETICAO = 3
+local DELAY = 0.15
+local NPCS_ATIVOS = {}
 
-local function isNPC(model)
-	if model:IsA("Model") and model:FindFirstChild("Humanoid") and model:FindFirstChild("HumanoidRootPart") then
-		if model ~= LocalPlayer.Character and not Players:GetPlayerFromCharacter(model) then
-			return true
-		end
+-- Criar GUI de seleção
+local function criarMenuSelecionarNPC()
+	local gui = Instance.new("ScreenGui", game.CoreGui)
+	gui.Name = "AutoFarmSelecionarNPC"
+
+	local frame = Instance.new("Frame", gui)
+	frame.Size = UDim2.new(0, 200, 0, 300)
+	frame.Position = UDim2.new(0, 10, 0.5, -150)
+	frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+	frame.BorderSizePixel = 0
+
+	local uilist = Instance.new("UIListLayout", frame)
+	uilist.Padding = UDim.new(0, 5)
+	uilist.SortOrder = Enum.SortOrder.LayoutOrder
+
+	local scroll = Instance.new("ScrollingFrame", frame)
+	scroll.Size = UDim2.new(1, 0, 1, -40)
+	scroll.CanvasSize = UDim2.new(0, 0, 10, 0)
+	scroll.BackgroundTransparency = 1
+	scroll.BorderSizePixel = 0
+	scroll.ScrollBarThickness = 6
+
+	local listLayout = Instance.new("UIListLayout", scroll)
+	listLayout.Padding = UDim.new(0, 4)
+	listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
+	local function toggleNPC(name)
+		NPCS_ATIVOS[name] = not NPCS_ATIVOS[name]
 	end
-	return false
-end
 
-local function createNPCESP(npc)
-	if npc:FindFirstChild("NPC_ESP") then return end
-
-	local billboard = Instance.new("BillboardGui")
-	billboard.Name = "NPC_ESP"
-	billboard.Size = UDim2.new(0, 100, 0, 50)
-	billboard.Adornee = npc.HumanoidRootPart
-	billboard.StudsOffset = Vector3.new(0, 3, 0)
-	billboard.AlwaysOnTop = true
-	billboard.Parent = npc
-
-	local label = Instance.new("TextLabel")
-	label.Size = UDim2.new(1, 0, 1, 0)
-	label.BackgroundTransparency = 1
-	label.TextColor3 = Color3.fromRGB(255, 255, 0)
-	label.TextStrokeTransparency = 0.5
-	label.TextScaled = true
-	label.Font = Enum.Font.GothamBold
-	label.Parent = billboard
-
-	-- Atualização dinâmica
-	RunService.RenderStepped:Connect(function()
-		if npc and npc:FindFirstChild("HumanoidRootPart") and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
-			local dist = (npc.HumanoidRootPart.Position - LocalPlayer.Character.HumanoidRootPart.Position).Magnitude
-			if dist <= DISTANCE_LIMIT then
-				label.Visible = true
-				label.Text = npc.Name .. "\n" .. math.floor(dist) .. " studs"
-			else
-				label.Visible = false -- Esconde se estiver longe
+	local nomesUnicos = {}
+	for _, npc in ipairs(workspace:GetDescendants()) do
+		if npc:IsA("Model") and npc:FindFirstChild("Humanoid") and npc:FindFirstChild("HumanoidRootPart") then
+			if not Players:GetPlayerFromCharacter(npc) then
+				nomesUnicos[npc.Name] = true
 			end
 		end
+	end
+
+	for nome in pairs(nomesUnicos) do
+		NPCS_ATIVOS[nome] = true -- padrão: ligado
+
+		local botao = Instance.new("TextButton", scroll)
+		botao.Size = UDim2.new(1, -10, 0, 30)
+		botao.Text = nome .. " [ON]"
+		botao.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+		botao.TextColor3 = Color3.new(1,1,1)
+		botao.Font = Enum.Font.GothamBold
+		botao.TextScaled = true
+
+		botao.MouseButton1Click:Connect(function()
+			toggleNPC(nome)
+			botao.Text = nome .. (NPCS_ATIVOS[nome] and " [ON]" or " [OFF]")
+			botao.BackgroundColor3 = NPCS_ATIVOS[nome] and Color3.fromRGB(40, 40, 40) or Color3.fromRGB(100, 0, 0)
+		end)
+	end
+
+	local desligar = Instance.new("TextButton", frame)
+	desligar.Size = UDim2.new(1, 0, 0, 30)
+	desligar.Position = UDim2.new(0, 0, 1, -30)
+	desligar.Text = "Desligar AutoFarm"
+	desligar.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+	desligar.TextColor3 = Color3.new(1,1,1)
+	desligar.Font = Enum.Font.GothamBold
+	desligar.TextScaled = true
+
+	desligar.MouseButton1Click:Connect(function()
+		getgenv().AutoFarmLigado = false
+		getgenv().AutoFarmRodando = false
+		gui:Destroy()
 	end)
 end
 
-task.spawn(function()
-	while true do
-		for _, obj in ipairs(workspace:GetDescendants()) do
-			if isNPC(obj) then
-				createNPCESP(obj)
+-- Funções de ataque e mira
+local function atacar()
+	for _ = 1, CLICK_REPETICAO do
+		vim:SendMouseButtonEvent(0, 0, 0, true, game, 0)
+		vim:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+	end
+end
+
+local function mirar(npc)
+	local screenPoint = workspace.CurrentCamera:WorldToScreenPoint(npc.HumanoidRootPart.Position)
+	vim:SendMouseMoveEvent(screenPoint.X, screenPoint.Y, game, 0)
+end
+
+local function soltarSkills()
+	for _, tecla in ipairs({"Z", "X", "C", "V"}) do
+		vim:SendKeyEvent(true, tecla, false, game)
+		task.wait(0.05)
+		vim:SendKeyEvent(false, tecla, false, game)
+	end
+end
+
+-- Função para detectar NPC válido
+local function isNPC(model)
+	return model:IsA("Model")
+		and model:FindFirstChild("Humanoid")
+		and model:FindFirstChild("HumanoidRootPart")
+		and model ~= player.Character
+		and not Players:GetPlayerFromCharacter(model)
+		and NPCS_ATIVOS[model.Name]
+end
+
+-- Encontrar NPC mais próximo (e permitido)
+local function encontrarAlvo()
+	local maisPerto, menorDist = nil, DISTANCIA_BUSCA
+	for _, model in ipairs(workspace:GetDescendants()) do
+		if isNPC(model) then
+			local dist = (hrp.Position - model.HumanoidRootPart.Position).Magnitude
+			if dist < menorDist and model.Humanoid.Health > 0 then
+				maisPerto = model
+				menorDist = dist
 			end
 		end
-		task.wait(1)
+	end
+	return maisPerto
+end
+
+-- Função de voo direto (sem colisões)
+local function voarAteNPC(npc)
+	local alvoPos = npc.HumanoidRootPart.Position
+	local direction = (alvoPos - hrp.Position).Unit
+	local speed = 100 -- Velocidade do voo
+
+	while (hrp.Position - alvoPos).Magnitude > DISTANCIA_ATAQUE do
+		hrp.CFrame = hrp.CFrame + direction * speed * 0.1
+		task.wait(0.1) -- ajusta a velocidade da movimentação
+	end
+end
+
+-- Função de pulo inteligente (air jump)
+local function pularSeNecessario(npc)
+	local diffY = npc.HumanoidRootPart.Position.Y - hrp.Position.Y
+	if diffY > 5 then
+		humanoid.Jump = true
+	end
+end
+
+-- Loop Principal
+criarMenuSelecionarNPC()
+task.spawn(function()
+	while getgenv().AutoFarmLigado do
+		local alvo = encontrarAlvo()
+		if alvo and alvo:FindFirstChild("HumanoidRootPart") then
+			local dist = (hrp.Position - alvo.HumanoidRootPart.Position).Magnitude
+			if dist > DISTANCIA_ATAQUE then
+				voarAteNPC(alvo)
+				pularSeNecessario(alvo)
+			else
+				mirar(alvo)
+				atacar()
+				soltarSkills()
+			end
+		end
+		task.wait(DELAY)
 	end
 end)
